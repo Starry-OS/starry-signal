@@ -32,7 +32,9 @@ pub enum DefaultSignalAction {
 
 /// Signal action that should be properly handled by the OS.
 ///
-/// See [`SignalManager::check_signals`] for details.
+/// See [`ThreadSignalManager::check_signals`] for details.
+///
+/// [`ThreadSignalManager::check_signals`]: crate::api::ThreadSignalManager::check_signals
 pub enum SignalOSAction {
     /// Terminate the process.
     Terminate,
