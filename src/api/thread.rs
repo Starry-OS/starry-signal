@@ -132,9 +132,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
         drop(blocked);
 
         loop {
-            let Some(sig) = self.dequeue_signal(&mask) else {
-                return None;
-            };
+            let sig = self.dequeue_signal(&mask)?;
             let action = &actions[sig.signo()];
             if let Some(os_action) = self.handle_signal(tf, restore_blocked, &sig, action) {
                 break Some((sig, os_action));
