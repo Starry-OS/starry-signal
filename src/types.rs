@@ -169,7 +169,7 @@ impl SignalSet {
     pub fn to_ctype(&self, dest: &mut kernel_sigset_t) {
         // SAFETY: `kernel_sigset_t` always has the same layout as `[c_ulong; 1]`.
         unsafe {
-            *mem::transmute::<_, &mut u64>(dest) = self.0;
+            *mem::transmute::<&mut kernel_sigset_t, &mut u64>(dest) = self.0;
         }
     }
 }
@@ -177,7 +177,7 @@ impl SignalSet {
 impl From<kernel_sigset_t> for SignalSet {
     fn from(value: kernel_sigset_t) -> Self {
         // SAFETY: `kernel_sigset_t` always has the same layout as `[c_ulong; 1]`.
-        unsafe { Self(*mem::transmute::<_, &u64>(&value)) }
+        unsafe { Self(*mem::transmute::<&kernel_sigset_t, &u64>(&value)) }
     }
 }
 
