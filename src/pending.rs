@@ -19,6 +19,13 @@ pub struct PendingSignals {
     /// Signal info queue for real-time signals.
     info_rt: [VecDeque<SignalInfo>; 33],
 }
+
+impl Default for PendingSignals {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PendingSignals {
     pub fn new() -> Self {
         Self {
