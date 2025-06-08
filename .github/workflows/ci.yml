@@ -17,6 +17,11 @@ jobs:
         toolchain: ${{ matrix.rust-toolchain }}
         components: rust-src, clippy, rustfmt
         targets: ${{ matrix.targets }}
+
+    - name: Set AX_CONFIG_PATH for aarch64-unknown-none-softfloat
+      if: matrix.rust-toolchain == 'aarch64-unknown-none-softfloat'
+      run: echo "AX_CONFIG_PATH=$PWD/.github/aarch64-qemu-virt.toml" >> $GITHUB_ENV
+
     - name: Check rust version
       run: rustc --version --verbose
     - name: Check code format
