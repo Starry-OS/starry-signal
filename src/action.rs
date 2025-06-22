@@ -91,6 +91,7 @@ pub struct SignalAction {
     pub disposition: SignalDisposition,
     pub restorer: __sigrestore_t,
 }
+
 impl SignalAction {
     /// Write ctype representation.
     pub fn to_ctype(&self, dest: &mut kernel_sigaction) {

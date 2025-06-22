@@ -22,19 +22,15 @@ pub struct PendingSignals {
 
 impl Default for PendingSignals {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PendingSignals {
-    pub fn new() -> Self {
         Self {
             set: SignalSet::default(),
             info_std: Default::default(),
             info_rt: array::from_fn(|_| VecDeque::new()),
         }
     }
+}
 
+impl PendingSignals {
     /// Puts a signal into the pending queue.
     ///
     /// Returns `true` if the signal was added, `false` if the signal is

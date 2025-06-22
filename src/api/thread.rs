@@ -34,7 +34,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
     pub fn new(proc: Arc<ProcessSignalManager<M, WQ>>) -> Self {
         Self {
             proc,
-            pending: Mutex::new(PendingSignals::new()),
+            pending: Mutex::new(PendingSignals::default()),
             blocked: Mutex::new(SignalSet::default()),
             stack: Mutex::new(SignalStack::default()),
         }
@@ -55,7 +55,7 @@ impl<M: RawMutex, WQ: WaitQueue> ThreadSignalManager<M, WQ> {
         action: &SignalAction,
     ) -> Option<SignalOSAction> {
         let signo = sig.signo();
-        info!("Handle signal: {:?} {}", signo, axtask::current().id_name());
+        info!("Handle signal: {:?}", signo);
         match action.disposition {
             SignalDisposition::Default => match signo.default_action() {
                 DefaultSignalAction::Terminate => Some(SignalOSAction::Terminate),
