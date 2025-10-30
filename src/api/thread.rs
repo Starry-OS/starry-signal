@@ -160,10 +160,7 @@ impl ThreadSignalManager {
                     self.proc.dequeue_signal(&mask)
                 }
             }?;
-            let action = {
-                let actions = self.proc.actions.lock();
-                actions[sig.signo()].clone()
-            };
+            let action = self.proc.actions.lock()[sig.signo()].clone();
 
             if let Some(os_action) = self.handle_signal(uctx, restore_blocked, &sig, &action) {
                 break Some((sig, os_action));
