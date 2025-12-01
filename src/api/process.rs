@@ -1,14 +1,15 @@
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     array,
     ops::{Index, IndexMut},
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
 use kspin::SpinNoIrq;
+use strum::IntoEnumIterator;
 
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
@@ -27,6 +28,7 @@ impl Default for SignalActions {
 
 impl Index<Signo> for SignalActions {
     type Output = SignalAction;
+
     fn index(&self, signo: Signo) -> &SignalAction {
         &self.0[signo as usize - 1]
     }
@@ -126,5 +128,28 @@ impl ProcessSignalManager {
     /// Gets currently pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set
+    }
+
+    /// Removes a signal from the process pending queue.
+    pub fn remove_signal(&self, signo: Signo) {
+        self.pending.lock().remove_signal(signo);
+    }
+
+    /// Determine whether there is a specific signal pending for the process
+    pub fn has_signal(&self, signo: Signo) -> bool {
+        self.pending.lock().has_signal(signo)
+    }
+
+    /// Clear all stopping signals in the process pending queue if any,
+    /// including `SIGSTOP`, `SIGTSTP`, `SIGTTIN`, and `SIGTTOU`.
+    pub fn flush_stop_signals(&self) {
+        let stop_signals: Vec<Signo> = Signo::iter()
+            .filter(|s| matches!(s.default_action(), DefaultSignalAction::Stop))
+            .collect();
+
+        let mut pending = self.pending.lock();
+        for sig in stop_signals {
+            pending.remove_signal(sig);
+        }
     }
 }
