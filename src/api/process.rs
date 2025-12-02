@@ -104,7 +104,9 @@ impl ProcessSignalManager {
     #[must_use]
     pub fn send_signal(&self, sig: SignalInfo) -> Option<u32> {
         let signo = sig.signo();
-        if self.signal_ignored(signo) {
+        // Only discard signals that have no side effects AND are ignored.
+        // SIGCONT and SIGKILL must always be queued for their side effects.
+        if !signo.has_side_effect() && self.signal_ignored(signo) {
             return None;
         }
 
