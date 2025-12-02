@@ -218,7 +218,9 @@ impl ThreadSignalManager {
     #[must_use]
     pub fn send_signal(&self, sig: SignalInfo) -> bool {
         let signo = sig.signo();
-        if self.proc.signal_ignored(signo) {
+        // Only discard signals that have no side effects AND are ignored.
+        // SIGCONT and SIGKILL must always be queued for their side effects.
+        if !signo.has_side_effect() && self.proc.signal_ignored(signo) {
             return false;
         }
 

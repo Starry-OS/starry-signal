@@ -117,6 +117,15 @@ impl Signo {
             _ => DefaultSignalAction::Ignore,
         }
     }
+
+    /// Checks if a signal has kernel-level side effects that must occur
+    /// even when the signal is ignored.
+    ///
+    /// SIGCONT and SIGKILL always have side effects (continue/kill process),
+    /// even when their disposition is SIG_IGN.
+    pub fn has_side_effect(&self) -> bool {
+        matches!(self, Signo::SIGCONT | Signo::SIGKILL)
+    }
 }
 
 /// Signal set. Compatible with `struct sigset_t` in libc.
