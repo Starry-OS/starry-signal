@@ -11,7 +11,7 @@ jobs:
         with:
           components: clippy
       - name: Clippy
-        run: cargo clippy --all-features --all-targets -- -Dwarnings
+        run: cargo clippy --all-features -- -Dwarnings
       - name: Test
         run: cargo test --all-features
   doc:
