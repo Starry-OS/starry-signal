@@ -19,14 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
+      - name: Install target
+        run: rustup target add x86_64-unknown-none
       - name: Build docs
         run: |
-          cargo doc --all-features --no-deps
-          printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name' | tr '-' '_' ) > target/doc/index.html
+          cargo doc --all-features --no-deps --target x86_64-unknown-none
+          printf '<meta http-equiv="refresh" content="0;url=%s/index.html">' $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name' | tr '-' '_' ) > target/x86_64-unknown-none/doc/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: target/doc
+          path: target/x86_64-unknown-none/doc
 
   deploy:
     runs-on: ubuntu-latest
