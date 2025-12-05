@@ -178,7 +178,12 @@ impl ProcessSignalManager {
     /// (SIGSTOP, SIGTSTP, SIGTTIN, or SIGTTOU) takes effect on the process:
     /// 1. Records which signal caused the stop, stored in `last_stop_signal`
     /// 2. Sets the `PENDING_STOP_EVENT` flag, for wait to detect it
-    /// 3. Clears the `PENDING_CONT_EVENT` flag
+    ///
+    /// Note: This does NOT clear `PENDING_CONT_EVENT`. Stop and continue events
+    /// are independent and can coexist, allowing the parent to observe all state
+    /// transitions in order (e.g., stop -> continue -> stop should report all
+    /// three events). This matches Linux kernel behavior where `SIGNAL_STOP_STOPPED`
+    /// and `SIGNAL_STOP_CONTINUED` are independent flag bits.
     ///
     /// # Memory Ordering
     ///
@@ -192,16 +197,10 @@ impl ProcessSignalManager {
     pub fn set_stop_signal(&self, signal: Signo) {
         *self.last_stop_signal.lock() = Some(signal);
 
-        // Atomically: clear CONT event, set STOP event
-        let _ = self.signal_events.fetch_update(
+        // Set STOP event flag without clearing CONT event
+        self.signal_events.fetch_or(
+            SignalEventFlags::PENDING_STOP_EVENT.bits(),
             Ordering::Release,
-            Ordering::Acquire,
-            |current_flags| {
-                Some(
-                    (current_flags & !SignalEventFlags::PENDING_CONT_EVENT.bits())
-                        | SignalEventFlags::PENDING_STOP_EVENT.bits(),
-                )
-            },
         );
     }
 
@@ -211,7 +210,12 @@ impl ProcessSignalManager {
     /// takes effect on the process:
     /// 1. Clears the recorded stop signal.
     /// 2. Sets the `PENDING_CONT_EVENT` flag for `wait` to detect it.
-    /// 3. Clears the `PENDING_STOP_EVENT` flag.
+    ///
+    /// Note: This does NOT clear `PENDING_STOP_EVENT`. Stop and continue events
+    /// are independent and can coexist, allowing the parent to observe all state
+    /// transitions in order (e.g., stop -> continue -> stop should report all
+    /// three events). This matches Linux kernel behavior where `SIGNAL_STOP_STOPPED`
+    /// and `SIGNAL_STOP_CONTINUED` are independent flag bits.
     ///
     /// # Memory Ordering
     ///
@@ -221,16 +225,10 @@ impl ProcessSignalManager {
     pub fn set_cont_signal(&self) {
         *self.last_stop_signal.lock() = None;
 
-        // Atomically: clear STOP event, set CONT event
-        let _ = self.signal_events.fetch_update(
+        // Set CONT event flag without clearing STOP event
+        self.signal_events.fetch_or(
+            SignalEventFlags::PENDING_CONT_EVENT.bits(),
             Ordering::Release,
-            Ordering::Acquire,
-            |current_flags| {
-                Some(
-                    (current_flags & !SignalEventFlags::PENDING_STOP_EVENT.bits())
-                        | SignalEventFlags::PENDING_CONT_EVENT.bits(),
-                )
-            },
         );
     }
 
