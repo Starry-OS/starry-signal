@@ -1,14 +1,16 @@
-use core::{
-    array,
-    ops::{Index, IndexMut},
-    sync::atomic::{AtomicBool, Ordering},
-};
-
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use core::{
+    array,
+    ops::{Index, IndexMut},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+};
+
+use bitflags::bitflags;
 use kspin::SpinNoIrq;
+use strum::IntoEnumIterator;
 
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
@@ -27,6 +29,7 @@ impl Default for SignalActions {
 
 impl Index<Signo> for SignalActions {
     type Output = SignalAction;
+
     fn index(&self, signo: Signo) -> &SignalAction {
         &self.0[signo as usize - 1]
     }
@@ -35,6 +38,14 @@ impl Index<Signo> for SignalActions {
 impl IndexMut<Signo> for SignalActions {
     fn index_mut(&mut self, signo: Signo) -> &mut SignalAction {
         &mut self.0[signo as usize - 1]
+    }
+}
+
+bitflags! {
+    /// A bitflag representing signal-stop and signal-continue event
+    pub struct SignalEventFlags: u8 {
+        const PENDING_STOP_EVENT = 1 << 0;
+        const PENDING_CONT_EVENT = 1 << 1;
     }
 }
 
@@ -53,6 +64,12 @@ pub struct ProcessSignalManager {
     pub(crate) children: SpinNoIrq<Vec<(u32, Weak<ThreadSignalManager>)>>,
 
     pub(crate) possibly_has_signal: AtomicBool,
+
+    /// Signal event flag, keep track of un-consumed stop/continue event by
+    /// `wait`
+    signal_events: AtomicU8,
+    /// The signal stops the process most recently
+    last_stop_signal: SpinNoIrq<Option<Signo>>,
 }
 
 impl ProcessSignalManager {
@@ -64,6 +81,8 @@ impl ProcessSignalManager {
             default_restorer,
             children: SpinNoIrq::new(Vec::new()),
             possibly_has_signal: AtomicBool::new(false),
+            signal_events: AtomicU8::new(0),
+            last_stop_signal: SpinNoIrq::new(None),
         }
     }
 
@@ -102,7 +121,9 @@ impl ProcessSignalManager {
     #[must_use]
     pub fn send_signal(&self, sig: SignalInfo) -> Option<u32> {
         let signo = sig.signo();
-        if self.signal_ignored(signo) {
+        // Only discard signals that have no side effects AND are ignored.
+        // SIGCONT and SIGKILL must always be queued for their side effects.
+        if !signo.has_side_effect() && self.signal_ignored(signo) {
             return None;
         }
 
@@ -126,5 +147,173 @@ impl ProcessSignalManager {
     /// Gets currently pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set
+    }
+
+    /// Removes a signal from the process pending queue.
+    pub fn remove_signal(&self, signo: Signo) {
+        self.pending.lock().remove_signal(signo);
+    }
+
+    /// Determine whether there is a specific signal pending for the process
+    pub fn has_signal(&self, signo: Signo) -> bool {
+        self.pending.lock().has_signal(signo)
+    }
+
+    /// Clear all stopping signals in the process pending queue if any,
+    /// including `SIGSTOP`, `SIGTSTP`, `SIGTTIN`, and `SIGTTOU`.
+    pub fn flush_stop_signals(&self) {
+        let stop_signals: Vec<Signo> = Signo::iter()
+            .filter(|s| matches!(s.default_action(), DefaultSignalAction::Stop))
+            .collect();
+
+        let mut pending = self.pending.lock();
+        for sig in stop_signals {
+            pending.remove_signal(sig);
+        }
+    }
+
+    /// Records a stop signal effect (atomically).
+    ///
+    /// This method is called by `do_stop()` when a stop signal
+    /// (SIGSTOP, SIGTSTP, SIGTTIN, or SIGTTOU) takes effect on the process:
+    /// 1. Records which signal caused the stop, stored in `last_stop_signal`
+    /// 2. Sets the `PENDING_STOP_EVENT` flag, for wait to detect it
+    ///
+    /// Note: This does NOT clear `PENDING_CONT_EVENT`. Stop and continue events
+    /// are independent and can coexist, allowing the parent to observe all state
+    /// transitions in order (e.g., stop -> continue -> stop should report all
+    /// three events). This matches Linux kernel behavior where `SIGNAL_STOP_STOPPED`
+    /// and `SIGNAL_STOP_CONTINUED` are independent flag bits.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Release` ordering to synchronize with `Acquire` loads in
+    /// `peek_pending_stop_event()`. This ensures that when wait() observes
+    /// the stop event, it also observes the signal value.
+    ///
+    /// # Arguments
+    ///
+    /// * `signal` - The stop signal that caused the process to stop
+    pub fn set_stop_signal(&self, signal: Signo) {
+        *self.last_stop_signal.lock() = Some(signal);
+
+        // Set STOP event flag without clearing CONT event
+        self.signal_events.fetch_or(
+            SignalEventFlags::PENDING_STOP_EVENT.bits(),
+            Ordering::Release,
+        );
+    }
+
+    /// Records a continue signal effect (atomically).
+    ///
+    /// This method should be called by `do_continue()` when a SIGCONT signal
+    /// takes effect on the process:
+    /// 1. Clears the recorded stop signal.
+    /// 2. Sets the `PENDING_CONT_EVENT` flag for `wait` to detect it.
+    ///
+    /// Note: This does NOT clear `PENDING_STOP_EVENT`. Stop and continue events
+    /// are independent and can coexist, allowing the parent to observe all state
+    /// transitions in order (e.g., stop -> continue -> stop should report all
+    /// three events). This matches Linux kernel behavior where `SIGNAL_STOP_STOPPED`
+    /// and `SIGNAL_STOP_CONTINUED` are independent flag bits.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Release` ordering to synchronize with `Acquire` loads in
+    /// `peek_pending_cont_event()`. This ensures that when wait() observes
+    /// the continue event, it also sees that the stop signal has been cleared.
+    pub fn set_cont_signal(&self) {
+        *self.last_stop_signal.lock() = None;
+
+        // Set CONT event flag without clearing STOP event
+        self.signal_events.fetch_or(
+            SignalEventFlags::PENDING_CONT_EVENT.bits(),
+            Ordering::Release,
+        );
+    }
+
+    /// Peeks at a pending stop signal event without consuming it.
+    ///
+    /// This method checks if there is an unreported stop event and returns
+    /// the signal that caused it. The event remains pending until explicitly
+    /// consumed by `consume_stop_event`.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(signal)` - There is a pending stop event caused by `signal`
+    /// * `None` - No pending stop event (either already consumed or never
+    ///   occurred)
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Acquire` ordering to synchronize with `Release` stores in
+    /// `set_stop_signal`. This ensures that if we see the `PENDING_STOP_EVENT`
+    /// flag, we also see the signal value.
+    pub fn peek_pending_stop_event(&self) -> Option<Signo> {
+        let flags = self.signal_events.load(Ordering::Acquire);
+
+        if (flags & SignalEventFlags::PENDING_STOP_EVENT.bits()) != 0 {
+            *self.last_stop_signal.lock()
+        } else {
+            None
+        }
+    }
+
+    /// Consumes (clears) the pending stop signal event.
+    ///
+    /// This method could be called by `wait()` after successfully reporting
+    /// the stop event to the waiter, unless `WNOWAIT` is set, which reflects
+    /// the "one-time consumption" semantics of POSIX wait:
+    /// once consumed, the same stop event will not be reported again.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Release` ordering to ensure that the consumption is visible
+    /// to other threads that might be calling `peek_pending_stop_event`.
+    pub fn consume_stop_event(&self) {
+        *self.last_stop_signal.lock() = None;
+
+        self.signal_events.fetch_and(
+            !SignalEventFlags::PENDING_STOP_EVENT.bits(),
+            Ordering::Release,
+        );
+    }
+
+    /// Peeks at a pending continue signal event without consuming it.
+    ///
+    /// This method checks if there is an unreported SIGCONT event. The event
+    /// remains pending until explicitly consumed by `consume_cont_event`.
+    ///
+    /// # Returns
+    ///
+    /// * `true` - There is a pending continue event
+    /// * `false` - No pending continue event
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Acquire` ordering to synchronize with `Release` stores in
+    /// `set_cont_signal`.
+    pub fn peek_pending_cont_event(&self) -> bool {
+        let flags = self.signal_events.load(Ordering::Acquire);
+        (flags & SignalEventFlags::PENDING_CONT_EVENT.bits()) != 0
+    }
+
+    /// Consumes (clears) the pending continue signal event.
+    ///
+    /// This method should be called by `wait()` after successfully reporting
+    /// the continue event to the waiter, unless `WNOWAIT` is set.
+    ///
+    /// This implements the "one-time consumption" semantics of POSIX wait:
+    /// once consumed, the same continue event will not be reported again.
+    ///
+    /// # Memory Ordering
+    ///
+    /// Uses `Release` ordering to ensure that the consumption is visible
+    /// to other threads that might be calling `peek_pending_cont_event`.
+    pub fn consume_cont_event(&self) {
+        self.signal_events.fetch_and(
+            !SignalEventFlags::PENDING_CONT_EVENT.bits(),
+            Ordering::Release,
+        );
     }
 }
