@@ -60,6 +60,7 @@ fn realtime_signal() {
     assert_eq!(ps.dequeue_signal(&mask).unwrap().signo(), Signo::SIGRT3);
     assert!(ps.set.has(Signo::SIGRT2));
 }
+
 #[test]
 fn mixed_signal() {
     let mut ps = PendingSignals::default();

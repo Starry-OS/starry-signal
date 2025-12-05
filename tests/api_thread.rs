@@ -153,6 +153,7 @@ fn restore() {
     uctx_user.set_sp(boxed as usize);
 
     env.thr.restore(&mut uctx_user);
+    unsafe { drop(Box::from_raw(boxed)) };
 
     assert_eq!(uctx_user.ip(), initial.ip());
     assert_eq!(uctx_user.sp(), initial.sp());
