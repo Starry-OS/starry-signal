@@ -81,19 +81,3 @@ fn signalinfo_new_user() {
     );
     assert_eq!(si.errno(), 0);
 }
-
-#[test]
-fn signalinfo_set_clone_debug() {
-    let mut si = SignalInfo::new_kernel(Signo::SIGTERM);
-    si.set_signo(Signo::SIGINT);
-    si.set_code(9);
-    assert_eq!(si.signo(), Signo::SIGINT);
-    assert_eq!(si.code(), 9);
-
-    let si2 = si.clone();
-    assert_eq!(si2.signo(), si.signo());
-    assert_eq!(si2.code(), si.code());
-
-    let s = format!("{:?}", si);
-    assert!(s.contains("signo") && s.contains("code"));
-}

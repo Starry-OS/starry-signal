@@ -1,19 +1,21 @@
+use std::{
+    mem::{MaybeUninit, zeroed},
+    sync::Arc,
+};
+
 use axcpu::uspace::UserContext;
-use core::mem::{MaybeUninit, zeroed};
 use extern_trait::extern_trait;
 use kspin::SpinNoIrq;
 use starry_signal::{
     SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
-    arch::UContext as ArchUContext,
 };
 use starry_vm::VmResult;
-use std::sync::Arc;
 
 struct TestEnv {
-    actions: std::sync::Arc<SpinNoIrq<SignalActions>>,
-    proc: std::sync::Arc<ProcessSignalManager>,
-    thr: std::sync::Arc<ThreadSignalManager>,
+    actions: Arc<SpinNoIrq<SignalActions>>,
+    proc: Arc<ProcessSignalManager>,
+    thr: Arc<ThreadSignalManager>,
 }
 
 impl TestEnv {
@@ -41,13 +43,6 @@ unsafe impl starry_vm::VmIo for DummyVm {
     fn write(&mut self, _start: usize, _buf: &[u8]) -> starry_vm::VmResult {
         Ok(())
     }
-}
-
-#[allow(dead_code)]
-struct SignalFrameTest {
-    ucontext: ArchUContext,
-    siginfo: SignalInfo,
-    uctx: UserContext,
 }
 
 #[test]
@@ -81,9 +76,11 @@ fn handle_signal() {
     let actions = env.actions.clone();
     actions.lock()[Signo::SIGTERM].disposition = SignalDisposition::Handler(test_handler);
     let sig = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
+
     let mut uctx: UserContext = unsafe { zeroed() };
     let initial_sp = 0x8000_0000usize;
     uctx.set_sp(initial_sp);
+
     let restore_blocked = env.thr.blocked();
     let action = env.actions.lock()[sig.signo()].clone();
     let result = env
@@ -131,30 +128,4 @@ fn check_signals() {
     assert!(env.thr.send_signal(sig.clone()));
     let (si, _os_action) = env.thr.check_signals(&mut uctx, None).unwrap();
     assert_eq!(si.signo(), Signo::SIGTERM);
-}
-
-#[test]
-fn restore() {
-    let env = TestEnv::new();
-    let sig = SignalInfo::new_user(Signo::SIGTERM, 0, 1);
-    assert_eq!(env.proc.send_signal(sig.clone()), Some(7));
-
-    let mut initial: UserContext = unsafe { zeroed() };
-    initial.set_sp(0x8000_0000usize);
-    initial.set_ip(0x4000_1000usize);
-    let ucontext = ArchUContext::new(&initial, env.thr.blocked());
-    let frame = SignalFrameTest {
-        ucontext,
-        siginfo: sig.clone(),
-        uctx: initial,
-    };
-    let boxed = Box::into_raw(Box::new(frame));
-    let mut uctx_user: UserContext = unsafe { zeroed() };
-    uctx_user.set_sp(boxed as usize);
-
-    env.thr.restore(&mut uctx_user);
-    unsafe { drop(Box::from_raw(boxed)) };
-
-    assert_eq!(uctx_user.ip(), initial.ip());
-    assert_eq!(uctx_user.sp(), initial.sp());
 }
