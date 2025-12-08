@@ -179,12 +179,6 @@ impl ProcessSignalManager {
     /// 1. Records which signal caused the stop, stored in `last_stop_signal`
     /// 2. Sets the `PENDING_STOP_EVENT` flag, for wait to detect it
     ///
-    /// Note: This does NOT clear `PENDING_CONT_EVENT`. Stop and continue events
-    /// are independent and can coexist, allowing the parent to observe all state
-    /// transitions in order (e.g., stop -> continue -> stop should report all
-    /// three events). This matches Linux kernel behavior where `SIGNAL_STOP_STOPPED`
-    /// and `SIGNAL_STOP_CONTINUED` are independent flag bits.
-    ///
     /// # Memory Ordering
     ///
     /// Uses `Release` ordering to synchronize with `Acquire` loads in
@@ -211,17 +205,10 @@ impl ProcessSignalManager {
     /// 1. Clears the recorded stop signal.
     /// 2. Sets the `PENDING_CONT_EVENT` flag for `wait` to detect it.
     ///
-    /// Note: This does NOT clear `PENDING_STOP_EVENT`. Stop and continue events
-    /// are independent and can coexist, allowing the parent to observe all state
-    /// transitions in order (e.g., stop -> continue -> stop should report all
-    /// three events). This matches Linux kernel behavior where `SIGNAL_STOP_STOPPED`
-    /// and `SIGNAL_STOP_CONTINUED` are independent flag bits.
-    ///
     /// # Memory Ordering
     ///
     /// Uses `Release` ordering to synchronize with `Acquire` loads in
-    /// `peek_pending_cont_event()`. This ensures that when wait() observes
-    /// the continue event, it also sees that the stop signal has been cleared.
+    /// `peek_pending_cont_event()`.
     pub fn set_cont_signal(&self) {
         *self.last_stop_signal.lock() = None;
 
