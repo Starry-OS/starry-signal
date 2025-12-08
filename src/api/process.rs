@@ -96,7 +96,18 @@ impl ProcessSignalManager {
     }
 
     /// Checks if a signal is ignored by the process.
+    /// Only discard signals that have no side effects AND are ignored.
+    /// SIGCONT and SIGKILL shall always be queued for their side effects.
     pub fn signal_ignored(&self, signo: Signo) -> bool {
+        // A speical case for SIGCONT (and may also inlcude SIGKILL even it cannot be
+        // ignored).
+        // Per POSIX.1-2024, when a process is stopped, SIGCONT should
+        // be able to continue this process even if the process may ignore the
+        // SIGCONT signal. We use the `has_side_effect` function here to deliver
+        // the SIGCONT under all circumstance in an early return.
+        if signo.has_side_effect() {
+            return false;
+        }
         match &self.actions.lock()[signo].disposition {
             SignalDisposition::Ignore => true,
             SignalDisposition::Default => {
@@ -123,7 +134,7 @@ impl ProcessSignalManager {
         let signo = sig.signo();
         // Only discard signals that have no side effects AND are ignored.
         // SIGCONT and SIGKILL must always be queued for their side effects.
-        if !signo.has_side_effect() && self.signal_ignored(signo) {
+        if self.signal_ignored(signo) {
             return None;
         }
 
