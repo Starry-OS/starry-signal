@@ -27,3 +27,4 @@ strum = { version = "0.27", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 extern-trait = "0.2"
+tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "time"] }

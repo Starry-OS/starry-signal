@@ -1,5 +1,6 @@
 use std::{
     mem::{MaybeUninit, zeroed},
+    ptr,
     sync::Arc,
 };
 
@@ -36,11 +37,20 @@ unsafe impl starry_vm::VmIo for DummyVm {
         DummyVm
     }
 
-    fn read(&mut self, _start: usize, _buf: &mut [MaybeUninit<u8>]) -> starry_vm::VmResult {
+    fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
+        unsafe {
+            let dst = buf.as_mut_ptr() as *mut u8;
+            let src = start as *const u8;
+            ptr::copy_nonoverlapping(src, dst, buf.len());
+        }
         Ok(())
     }
 
-    fn write(&mut self, _start: usize, _buf: &[u8]) -> starry_vm::VmResult {
+    fn write(&mut self, start: usize, buf: &[u8]) -> VmResult {
+        unsafe {
+            let dst = start as *mut u8;
+            ptr::copy_nonoverlapping(buf.as_ptr(), dst, buf.len());
+        }
         Ok(())
     }
 }
@@ -78,7 +88,8 @@ fn handle_signal() {
     let sig = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
 
     let mut uctx: UserContext = unsafe { zeroed() };
-    let initial_sp = 0x8000_0000usize;
+    let mut stack = vec![0u8; 16 * 1024].into_boxed_slice();
+    let initial_sp = stack.as_mut_ptr() as usize + stack.len();
     uctx.set_sp(initial_sp);
 
     let restore_blocked = env.thr.blocked();
@@ -91,6 +102,8 @@ fn handle_signal() {
     assert_eq!(uctx.ip(), test_handler as *const () as usize);
     assert!(uctx.sp() < initial_sp);
     assert_eq!(uctx.arg0(), Signo::SIGTERM as usize);
+
+    drop(stack);
 }
 
 #[test]
@@ -128,4 +141,33 @@ fn check_signals() {
     assert!(env.thr.send_signal(sig.clone()));
     let (si, _os_action) = env.thr.check_signals(&mut uctx, None).unwrap();
     assert_eq!(si.signo(), Signo::SIGTERM);
+}
+
+#[test]
+fn restore() {
+    unsafe extern "C" fn test_handler(_: i32) {}
+    let env = TestEnv::new();
+    let sig = SignalInfo::new_user(Signo::SIGTERM, 0, 1);
+    env.actions.lock()[Signo::SIGTERM].disposition = SignalDisposition::Handler(test_handler);
+
+    let mut stack = vec![0u8; 16 * 1024].into_boxed_slice();
+    let sp = stack.as_mut_ptr() as usize + stack.len();
+    let mut initial: UserContext = unsafe { zeroed() };
+    initial.set_sp(sp);
+    initial.set_ip(0x4000_1000usize);
+    let mut uctx_user = initial.clone();
+
+    let restore_blocked = env.thr.blocked();
+    let action = env.actions.lock()[sig.signo()].clone();
+    env.thr
+        .handle_signal(&mut uctx_user, restore_blocked, &sig, &action);
+
+    let new_sp = uctx_user.sp() + 8;
+    uctx_user.set_sp(new_sp);
+    env.thr.restore(&mut uctx_user);
+
+    assert_eq!(uctx_user.ip(), initial.ip());
+    assert_eq!(uctx_user.sp(), initial.sp());
+
+    drop(stack);
 }
