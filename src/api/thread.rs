@@ -1,20 +1,20 @@
+use alloc::{sync::Arc, vec::Vec};
 use core::{
     alloc::Layout,
     mem::offset_of,
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use alloc::sync::Arc;
 use axcpu::uspace::UserContext;
 use kspin::SpinNoIrq;
 use starry_vm::VmMutPtr;
+use strum::IntoEnumIterator;
 
+use super::ProcessSignalManager;
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
     SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo, arch::UContext,
 };
-
-use super::ProcessSignalManager;
 
 struct SignalFrame {
     ucontext: UContext,
@@ -146,7 +146,7 @@ impl ThreadSignalManager {
         &self,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
-    ) -> Option<(SignalInfo, SignalOSAction)> {
+    ) -> Option<(SignalInfo, Option<SignalOSAction>)> {
         let blocked = self.blocked.lock();
         let mask = !*blocked;
         let restore_blocked = restore_blocked.unwrap_or_else(|| *blocked);
@@ -163,7 +163,18 @@ impl ThreadSignalManager {
             let action = self.proc.actions.lock()[sig.signo()].clone();
 
             if let Some(os_action) = self.handle_signal(uctx, restore_blocked, &sig, &action) {
-                break Some((sig, os_action));
+                break Some((sig, Some(os_action)));
+            }
+
+            // Special case:
+            // `SIGCONT` with ignored disposition.
+            // Even though `handle_signal` returned None (signal ignored),
+            // we still need to report it for side effects,
+            // i.e., continue a stopped process even if it ignores `SIGCONT`.
+            if sig.signo() == Signo::SIGCONT
+                && matches!(action.disposition, SignalDisposition::Ignore)
+            {
+                break Some((sig, None));
             }
         }
     }
@@ -175,7 +186,7 @@ impl ThreadSignalManager {
         &self,
         uctx: &mut UserContext,
         restore_blocked: Option<SignalSet>,
-    ) -> Option<(SignalInfo, SignalOSAction)> {
+    ) -> Option<(SignalInfo, Option<SignalOSAction>)> {
         // Fast path
         if !self.possibly_has_signal.load(Ordering::Acquire)
             && !self.proc.possibly_has_signal.load(Ordering::Acquire)
@@ -251,5 +262,28 @@ impl ThreadSignalManager {
     /// Gets current pending signals.
     pub fn pending(&self) -> SignalSet {
         self.pending.lock().set | self.proc.pending()
+    }
+
+    /// Removes a signal from the thread pending queue.
+    pub fn remove_signal(&self, signo: Signo) {
+        self.pending.lock().remove_signal(signo);
+    }
+
+    /// Determine whether there is a specific signal pending for the thread
+    pub fn has_signal(&self, signo: Signo) -> bool {
+        self.pending.lock().has_signal(signo)
+    }
+
+    /// Clear all stopping signals in the thread pending queue if any,
+    /// including `SIGSTOP`, `SIGTSTP`, `SIGTTIN`, and `SIGTTOU`.
+    pub fn flush_stop_signals(&self) {
+        let stop_signals: Vec<Signo> = Signo::iter()
+            .filter(|s| matches!(s.default_action(), DefaultSignalAction::Stop))
+            .collect();
+
+        let mut pending = self.pending.lock();
+        for stop_signal in stop_signals {
+            pending.remove_signal(stop_signal);
+        }
     }
 }

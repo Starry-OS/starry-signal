@@ -1,6 +1,5 @@
-use core::array;
-
 use alloc::{boxed::Box, collections::vec_deque::VecDeque};
+use core::array;
 
 use crate::{SignalInfo, SignalSet};
 
@@ -65,5 +64,23 @@ impl PendingSignals {
                 self.info_std[signo as usize].take().map(|boxed| *boxed)
             }
         })
+    }
+
+    /// Removes a signal from the thread's pending queue.
+    pub fn remove_signal(&mut self, signo: crate::Signo) {
+        if self.set.has(signo) {
+            self.set.remove(signo);
+            // Also remove the detail info about this signal to be removed
+            if signo.is_realtime() {
+                self.info_rt[signo as usize - 32].clear();
+            } else {
+                self.info_std[signo as usize] = None;
+            }
+        }
+    }
+
+    /// Check whether there is a specific signal pending
+    pub fn has_signal(&self, signo: crate::Signo) -> bool {
+        self.set.has(signo)
     }
 }
