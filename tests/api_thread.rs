@@ -1,7 +1,8 @@
+#![feature(maybe_uninit_write_slice)]
+
 use std::{
     mem::{MaybeUninit, zeroed},
-    ptr,
-    sync::Arc,
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
 };
 
 use axcpu::uspace::UserContext;
@@ -11,7 +12,7 @@ use starry_signal::{
     SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
-use starry_vm::VmResult;
+use starry_vm::{VmIo, VmResult};
 
 struct TestEnv {
     actions: Arc<SpinNoIrq<SignalActions>>,
@@ -28,29 +29,33 @@ impl TestEnv {
     }
 }
 
-#[derive(Clone, Copy)]
-struct DummyVm;
+static POOL: LazyLock<Mutex<Box<[u8]>>> = LazyLock::new(|| {
+    let size = 0x0100_0000; // 1 MiB
+    Mutex::new(vec![0; size].into_boxed_slice())
+});
+
+struct Vm(MutexGuard<'static, Box<[u8]>>);
 
 #[extern_trait]
-unsafe impl starry_vm::VmIo for DummyVm {
+unsafe impl VmIo for Vm {
     fn new() -> Self {
-        DummyVm
+        let pool = POOL.lock().unwrap();
+        Vm(pool)
     }
 
     fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
-        unsafe {
-            let dst = buf.as_mut_ptr() as *mut u8;
-            let src = start as *const u8;
-            ptr::copy_nonoverlapping(src, dst, buf.len());
-        }
+        let base = self.0.as_ptr() as usize;
+        let offset = start - base;
+        let slice = &self.0[offset..offset + buf.len()];
+        buf.write_copy_of_slice(slice);
         Ok(())
     }
 
     fn write(&mut self, start: usize, buf: &[u8]) -> VmResult {
-        unsafe {
-            let dst = start as *mut u8;
-            ptr::copy_nonoverlapping(buf.as_ptr(), dst, buf.len());
-        }
+        let base = self.0.as_ptr() as usize;
+        let offset = start - base;
+        let slice = &mut self.0[offset..offset + buf.len()];
+        slice.copy_from_slice(buf);
         Ok(())
     }
 }
@@ -88,8 +93,10 @@ fn handle_signal() {
     let sig = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
 
     let mut uctx: UserContext = unsafe { zeroed() };
-    let mut stack = vec![0u8; 16 * 1024].into_boxed_slice();
-    let initial_sp = stack.as_mut_ptr() as usize + stack.len();
+    let initial_sp = {
+        let pool = POOL.lock().unwrap();
+        pool.as_ptr() as usize + pool.len()
+    };
     uctx.set_sp(initial_sp);
 
     let restore_blocked = env.thr.blocked();
@@ -102,8 +109,6 @@ fn handle_signal() {
     assert_eq!(uctx.ip(), test_handler as *const () as usize);
     assert!(uctx.sp() < initial_sp);
     assert_eq!(uctx.arg0(), Signo::SIGTERM as usize);
-
-    drop(stack);
 }
 
 #[test]
@@ -150,11 +155,13 @@ fn restore() {
     let sig = SignalInfo::new_user(Signo::SIGTERM, 0, 1);
     env.actions.lock()[Signo::SIGTERM].disposition = SignalDisposition::Handler(test_handler);
 
-    let mut stack = vec![0u8; 16 * 1024].into_boxed_slice();
-    let sp = stack.as_mut_ptr() as usize + stack.len();
+    let sp = {
+        let pool = POOL.lock().unwrap();
+        pool.as_ptr() as usize + pool.len()
+    };
     let mut initial: UserContext = unsafe { zeroed() };
     initial.set_sp(sp);
-    initial.set_ip(0x4000_1000usize);
+    initial.set_ip(0x219);
     let mut uctx_user = initial.clone();
 
     let restore_blocked = env.thr.blocked();
@@ -168,6 +175,4 @@ fn restore() {
 
     assert_eq!(uctx_user.ip(), initial.ip());
     assert_eq!(uctx_user.sp(), initial.sp());
-
-    drop(stack);
 }

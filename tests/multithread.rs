@@ -1,9 +1,12 @@
+#![feature(maybe_uninit_write_slice)]
+
 use std::{
-    future::Future,
     mem::{MaybeUninit, zeroed},
-    ptr,
-    sync::Arc,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc, LazyLock, Mutex, MutexGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread,
     time::Duration,
 };
 
@@ -14,24 +17,20 @@ use starry_signal::{
     SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
-use starry_vm::VmResult;
-use tokio::time;
+use starry_vm::{VmError, VmIo, VmResult};
 
-async fn wait_until<F, Fut>(timeout: Duration, mut check: F) -> bool
+fn wait_until<F>(timeout: Duration, mut check: F) -> bool
 where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = bool>,
+    F: FnMut() -> bool,
 {
-    time::timeout(timeout, async {
-        loop {
-            if check().await {
-                break;
-            }
-            time::sleep(Duration::from_millis(1)).await;
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if check() {
+            return true;
         }
-    })
-    .await
-    .is_ok()
+        thread::sleep(Duration::from_millis(1));
+    }
+    false
 }
 
 struct TestEnv {
@@ -49,54 +48,69 @@ impl TestEnv {
     }
 }
 
-#[derive(Clone, Copy)]
-struct DummyVm;
+static POOL: LazyLock<Mutex<Box<[u8]>>> = LazyLock::new(|| {
+    let size = 0x0100_0000; // 1 MiB
+    Mutex::new(vec![0; size].into_boxed_slice())
+});
+
+struct Vm(MutexGuard<'static, Box<[u8]>>);
 
 #[extern_trait]
-unsafe impl starry_vm::VmIo for DummyVm {
+unsafe impl VmIo for Vm {
     fn new() -> Self {
-        DummyVm
+        let pool = POOL.lock().unwrap();
+        Vm(pool)
     }
 
     fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
-        unsafe {
-            let dst = buf.as_mut_ptr() as *mut u8;
-            let src = start as *const u8;
-            ptr::copy_nonoverlapping(src, dst, buf.len());
+        let base = self.0.as_ptr() as usize;
+        if start < base {
+            return Err(VmError::BadAddress);
         }
+        let offset = start - base;
+        if offset + buf.len() > self.0.len() {
+            return Err(VmError::BadAddress);
+        }
+        let slice = &self.0[offset..offset + buf.len()];
+        buf.write_copy_of_slice(slice);
         Ok(())
     }
 
     fn write(&mut self, start: usize, buf: &[u8]) -> VmResult {
-        unsafe {
-            let dst = start as *mut u8;
-            ptr::copy_nonoverlapping(buf.as_ptr(), dst, buf.len());
+        let base = self.0.as_ptr() as usize;
+        if start < base {
+            return Err(VmError::BadAddress);
         }
+        let offset = start - base;
+        if offset + buf.len() > self.0.len() {
+            return Err(VmError::BadAddress);
+        }
+        let slice = &mut self.0[offset..offset + buf.len()];
+        slice.copy_from_slice(buf);
         Ok(())
     }
 }
 
-#[tokio::test]
-async fn async_send_signal() {
+#[test]
+fn thread_send_signal() {
     let env = TestEnv::new();
     let sig = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
 
     let thr = env.thr.clone();
-    tokio::spawn(async move {
-        time::sleep(Duration::from_millis(10)).await;
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(10));
         let _ = thr.send_signal(sig);
     });
 
-    let res = wait_until(Duration::from_millis(100), || async {
+    let res = wait_until(Duration::from_millis(100), || {
         env.thr.pending().has(Signo::SIGTERM) || env.proc.pending().has(Signo::SIGTERM)
-    })
-    .await;
+    });
 
     assert!(res);
 }
 
-#[tokio::test]
-async fn async_blocked() {
+#[test]
+fn thread_blocked() {
     let env = TestEnv::new();
     let sig = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
 
@@ -107,15 +121,14 @@ async fn async_blocked() {
     assert!(env.thr.signal_blocked(Signo::SIGTERM));
 
     let thr = env.thr.clone();
-    tokio::spawn(async move {
-        time::sleep(Duration::from_millis(10)).await;
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(10));
         let _ = thr.send_signal(sig);
     });
 
-    let pending_res = wait_until(Duration::from_millis(100), || async {
+    let pending_res = wait_until(Duration::from_millis(100), || {
         env.thr.pending().has(Signo::SIGTERM)
-    })
-    .await;
+    });
     assert!(pending_res);
 
     env.thr.set_blocked(SignalSet::default());
@@ -123,7 +136,7 @@ async fn async_blocked() {
 
     let uctx = Arc::new(SpinNoIrq::new(unsafe { zeroed::<UserContext>() }));
     uctx.lock().set_sp(0x8000_0000);
-    let res = wait_until(Duration::from_millis(100), || async {
+    let res = wait_until(Duration::from_millis(100), || {
         let mut uctx_ref = uctx.lock().clone();
         if let Some((si, _)) = env.thr.check_signals(&mut uctx_ref, None) {
             assert_eq!(si.signo(), Signo::SIGTERM);
@@ -131,21 +144,22 @@ async fn async_blocked() {
         } else {
             false
         }
-    })
-    .await;
+    });
     assert!(res);
 }
 
-#[tokio::test]
-async fn async_handler() {
+#[test]
+fn thread_handler() {
     unsafe extern "C" fn test_handler(_: i32) {}
 
     let env = TestEnv::new();
     env.actions.lock()[Signo::SIGTERM].disposition = SignalDisposition::Handler(test_handler);
 
-    let mut stack = vec![0u8; 16 * 1024].into_boxed_slice();
-    let initial_sp = stack.as_mut_ptr() as usize + stack.len();
     let uctx = Arc::new(SpinNoIrq::new(unsafe { zeroed::<UserContext>() }));
+    let initial_sp = {
+        let pool = POOL.lock().unwrap();
+        pool.as_ptr() as usize + pool.len()
+    };
     uctx.lock().set_sp(initial_sp);
 
     let first = SignalInfo::new_user(Signo::SIGTERM, 9, 9);
@@ -159,21 +173,19 @@ async fn async_handler() {
     assert!(env.thr.signal_blocked(Signo::SIGTERM));
 
     let thr = env.thr.clone();
-    tokio::spawn(async move {
+    thread::spawn(move || {
         let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGINT, 2, 2));
         let _ = thr.send_signal(SignalInfo::new_user(Signo::SIGTERM, 3, 3));
     });
 
-    let pending_res = wait_until(Duration::from_millis(200), || async {
+    let pending_res = wait_until(Duration::from_millis(200), || {
         env.thr.pending().has(Signo::SIGTERM)
-    })
-    .await;
+    });
     assert!(pending_res);
 
-    let pending_res = wait_until(Duration::from_millis(200), || async {
+    let pending_res = wait_until(Duration::from_millis(200), || {
         env.thr.pending().has(Signo::SIGINT)
-    })
-    .await;
+    });
     assert!(pending_res);
 
     let frame_sp = uctx.lock().sp() + 8;
@@ -185,22 +197,16 @@ async fn async_handler() {
     assert!(!env.thr.signal_blocked(Signo::SIGTERM));
 
     let delivered = Arc::new(AtomicUsize::new(0));
-    let delivered_result = {
-        wait_until(Duration::from_millis(200), move || {
-            let thr = env.thr.clone();
-            let delivered_ref = delivered.clone();
-            let uctx_ref = uctx.clone();
-            async move {
-                if let Some((sig, _)) = thr.check_signals(&mut *uctx_ref.lock(), None) {
-                    assert!(matches!(sig.signo(), Signo::SIGINT | Signo::SIGTERM));
-                    delivered_ref.fetch_add(1, Ordering::SeqCst);
-                }
-                delivered_ref.load(Ordering::SeqCst) >= 2
-            }
-        })
-        .await
-    };
+    let delivered_result = wait_until(Duration::from_millis(200), || {
+        let thr = env.thr.clone();
+        let delivered_ref = delivered.clone();
+        let uctx_ref = uctx.clone();
+        if let Some((sig, _)) = thr.check_signals(&mut *uctx_ref.lock(), None) {
+            assert!(matches!(sig.signo(), Signo::SIGINT | Signo::SIGTERM));
+            delivered_ref.fetch_add(1, Ordering::SeqCst);
+        }
+        delivered_ref.load(Ordering::SeqCst) >= 2
+    });
 
     assert!(delivered_result);
-    drop(stack);
 }
