@@ -49,7 +49,7 @@ impl TestEnv {
 }
 
 static POOL: LazyLock<Mutex<Box<[u8]>>> = LazyLock::new(|| {
-    let size = 0x0100_0000;
+    let size = 0x0100_0000; // 16 MiB
     Mutex::new(vec![0; size].into_boxed_slice())
 });
 
