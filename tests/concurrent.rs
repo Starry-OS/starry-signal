@@ -9,7 +9,7 @@ use starry_signal::{SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Si
 mod common;
 use common::*;
 
-pub fn wait_until<F>(mut check: F) -> bool
+fn wait_until<F>(mut check: F) -> bool
 where
     F: FnMut() -> bool,
 {
@@ -119,7 +119,7 @@ fn concurrent_check_signals() {
 
     let mut delivered = SignalSet::default();
     assert!(wait_until(|| {
-        let thr = thr.clone();
+
         if let Some((sig, _)) = thr.check_signals(&mut uctx, None) {
             delivered.add(sig.signo());
         }
