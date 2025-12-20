@@ -119,7 +119,6 @@ fn concurrent_check_signals() {
 
     let mut delivered = SignalSet::default();
     assert!(wait_until(|| {
-
         if let Some((sig, _)) = thr.check_signals(&mut uctx, None) {
             delivered.add(sig.signo());
         }
