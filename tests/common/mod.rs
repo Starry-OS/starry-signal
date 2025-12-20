@@ -1,32 +1,24 @@
-use extern_trait::extern_trait;
-use starry_vm::{VmError, VmIo, VmResult};
 use std::{
     mem::MaybeUninit,
-    sync::{LazyLock, Mutex, MutexGuard},
-    thread,
-    time::Duration,
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
 };
 
-pub fn wait_until<F>(timeout: Duration, mut check: F) -> bool
-where
-    F: FnMut() -> bool,
-{
-    let start = std::time::Instant::now();
-    while start.elapsed() < timeout {
-        if check() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(1));
-    }
-    false
-}
+use extern_trait::extern_trait;
+use kspin::SpinNoIrq;
+use starry_signal::api::{ProcessSignalManager, SignalActions, ThreadSignalManager};
+use starry_vm::{VmError, VmIo, VmResult};
 
-pub static POOL: LazyLock<Mutex<Box<[u8]>>> = LazyLock::new(|| {
+static POOL: LazyLock<Mutex<Box<[u8]>>> = LazyLock::new(|| {
     let size = 0x0100_0000; // 16 MiB
     Mutex::new(vec![0; size].into_boxed_slice())
 });
 
-pub struct Vm(MutexGuard<'static, Box<[u8]>>);
+pub fn initial_sp() -> usize {
+    let pool = POOL.lock().unwrap();
+    pool.as_ptr() as usize + pool.len()
+}
+
+struct Vm(MutexGuard<'static, Box<[u8]>>);
 
 #[extern_trait]
 unsafe impl VmIo for Vm {
@@ -56,4 +48,15 @@ unsafe impl VmIo for Vm {
         slice.copy_from_slice(buf);
         Ok(())
     }
+}
+
+pub const TID: u32 = 7;
+
+pub fn new_test_env() -> (Arc<ProcessSignalManager>, Arc<ThreadSignalManager>) {
+    let proc = Arc::new(ProcessSignalManager::new(
+        Arc::new(SpinNoIrq::new(SignalActions::default())),
+        0,
+    ));
+    let thr = ThreadSignalManager::new(TID, proc.clone());
+    (proc, thr)
 }
