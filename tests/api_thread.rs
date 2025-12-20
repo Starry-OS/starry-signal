@@ -1,7 +1,3 @@
-#![feature(maybe_uninit_write_slice)]
-
-mod common;
-
 use std::{
     mem::zeroed,
     sync::{
@@ -13,12 +9,14 @@ use std::{
 };
 
 use axcpu::uspace::UserContext;
-use common::*;
 use kspin::SpinNoIrq;
 use starry_signal::{
     SignalDisposition, SignalInfo, SignalOSAction, SignalSet, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
+
+mod common;
+use common::*;
 
 struct TestEnv {
     actions: Arc<SpinNoIrq<SignalActions>>,
@@ -137,7 +135,7 @@ fn restore() {
     let mut initial: UserContext = unsafe { zeroed() };
     initial.set_sp(sp);
     initial.set_ip(0x219);
-    let mut uctx_user = initial.clone();
+    let mut uctx_user = initial;
 
     let restore_blocked = env.thr.blocked();
     let action = env.actions.lock()[sig.signo()].clone();
@@ -198,7 +196,7 @@ fn thread_blocked() {
     let uctx = Arc::new(SpinNoIrq::new(unsafe { zeroed::<UserContext>() }));
     uctx.lock().set_sp(0x8000_0000);
     let res = wait_until(Duration::from_millis(100), || {
-        let mut uctx_ref = uctx.lock().clone();
+        let mut uctx_ref = *uctx.lock();
         if let Some((si, _)) = env.thr.check_signals(&mut uctx_ref, None) {
             assert_eq!(si.signo(), Signo::SIGTERM);
             true
@@ -263,7 +261,7 @@ fn thread_handler() {
         let delivered_ref = delivered.clone();
         let uctx_ref = uctx.clone();
         let mut guard = uctx_ref.lock();
-        let mut ctx = guard.clone();
+        let mut ctx = *guard;
         if let Some((sig, _)) = thr.check_signals(&mut ctx, None) {
             let bit = match sig.signo() {
                 Signo::SIGINT => 0b01,
