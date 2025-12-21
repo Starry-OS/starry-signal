@@ -92,7 +92,16 @@ impl ThreadSignalManager {
                 };
                 drop(stack);
 
-                let aligned_sp = (sp - layout.size()) & !(layout.align() - 1);
+                let restorer = action
+                    .restorer
+                    .map_or(self.proc.default_restorer.load(Ordering::Relaxed), |f| f as _);
+
+                #[cfg(target_arch = "x86_64")]
+                let sp_for_frame = sp - 8;
+                #[cfg(not(target_arch = "x86_64"))]
+                let sp_for_frame = sp;
+
+                let aligned_sp = (sp_for_frame - layout.size()) & !(layout.align() - 1);
 
                 let frame_ptr = aligned_sp as *mut SignalFrame;
                 if frame_ptr
@@ -112,9 +121,6 @@ impl ThreadSignalManager {
                 uctx.set_arg1(aligned_sp + offset_of!(SignalFrame, siginfo));
                 uctx.set_arg2(aligned_sp + offset_of!(SignalFrame, ucontext));
 
-                let restorer = action
-                    .restorer
-                    .map_or(self.proc.default_restorer, |f| f as _);
                 #[cfg(target_arch = "x86_64")]
                 {
                     let new_sp = uctx.sp() - 8;
