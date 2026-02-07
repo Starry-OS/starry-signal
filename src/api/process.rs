@@ -5,7 +5,7 @@ use alloc::{
 use core::{
     array,
     ops::{Index, IndexMut},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use kspin::SpinNoIrq;
@@ -48,7 +48,7 @@ pub struct ProcessSignalManager {
     pub actions: Arc<SpinNoIrq<SignalActions>>,
 
     /// The default restorer function.
-    pub(crate) default_restorer: usize,
+    pub default_restorer: AtomicUsize,
 
     /// Thread-level signal managers.
     pub(crate) children: SpinNoIrq<Vec<(u32, Weak<ThreadSignalManager>)>>,
@@ -62,10 +62,15 @@ impl ProcessSignalManager {
         Self {
             pending: SpinNoIrq::new(PendingSignals::default()),
             actions,
-            default_restorer,
+            default_restorer: AtomicUsize::new(default_restorer),
             children: SpinNoIrq::new(Vec::new()),
             possibly_has_signal: AtomicBool::new(false),
         }
+    }
+
+    /// Sets the default restorer function.
+    pub fn set_default_restorer(&self, restorer: usize) {
+        self.default_restorer.store(restorer, Ordering::Relaxed);
     }
 
     pub(crate) fn dequeue_signal(&self, mask: &SignalSet) -> Option<SignalInfo> {
