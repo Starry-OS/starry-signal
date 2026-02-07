@@ -1,17 +1,17 @@
 [package]
 name = "starry-signal"
-version = "0.2.3"
+version = "0.2.4-preview.1"
 edition = "2024"
-authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
+authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>", "Yu Chen <yuchen@tsinghua.edu.cn>"]
 description = "Signal management library for Starry OS"
 keywords = ["starry-os", "arceos", "signal", "ipc"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Starry-OS/starry-signal"
 
 [dependencies]
-axcpu = { version = "0.3", features = [
+axcpu = { version = "0.3.0-preview.3", features = [
     "uspace",
-], git = "https://github.com/arceos-org/axcpu.git", tag = "dev-v03" }
+] }
 bitflags = "2.6"
 cfg-if = "1"
 derive_more = { version = "2.0", default-features = false, features = ["full"] }
